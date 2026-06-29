@@ -352,5 +352,41 @@ export function leTrucPlugin(getTypeChecker?: () => TypeChecker): Plugin {
         declaration: { name, module: moduleDoc.path },
       });
     },
+
+    // After all modules are analysed, fix up superclass references on
+    // declarations handled by the default analyzer (e.g. structural-only
+    // `class extends HTMLElement {}` stubs) so built-in types declare
+    // `package: "global:"` per the CEM spec. Without it, `cem validate`
+    // warns: "superclass HTMLElement is a built-in type but missing package
+    // field". Our synthesised Le Truc declarations have no superclass field,
+    // so this only touches declarations the default analyzer produced.
+    packageLinkPhase({
+      customElementsManifest,
+    }: {
+      // biome-ignore lint/suspicious/noExplicitAny: avoid version-mismatch errors
+      customElementsManifest: any;
+    }): void {
+      const BUILT_INS = new Set([
+        "HTMLElement",
+        "SVGElement",
+        "Document",
+        "ShadowRoot",
+        "Element",
+        "Node",
+      ]);
+      for (const module of customElementsManifest.modules ?? []) {
+        for (const decl of module.declarations ?? []) {
+          const superclass = decl.superclass;
+          if (
+            superclass &&
+            typeof superclass.name === "string" &&
+            BUILT_INS.has(superclass.name) &&
+            !superclass.package
+          ) {
+            superclass.package = "global:";
+          }
+        }
+      }
+    },
   };
 }

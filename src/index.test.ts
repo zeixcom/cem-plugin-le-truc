@@ -434,3 +434,29 @@ export default defineComponent<{ count: number }>('basic-counter', ({ expose }: 
     });
   });
 });
+
+// ─── Test 8: superclass package field for built-in types ────────────────────
+// The default analyzer emits superclass: { name: "HTMLElement" } without
+// `package: "global:"` for declarations it produces (e.g. structural-only
+// `class extends HTMLElement {}` stubs). The CEM spec requires built-in types
+// to declare package: "global:". Regression test for the cem validate warning
+// "superclass HTMLElement is a built-in type but missing package field".
+describe("packageLinkPhase: superclass package field", () => {
+  test("adds package: global: to built-in superclass references", () => {
+    const manifest = runPlugin({
+      "stub.ts": `
+class StubEl extends HTMLElement {}
+customElements.define('stub-el', StubEl)
+`,
+    });
+    // Find the declaration produced by the default analyzer (not our plugin's
+    // synthesised one — stub-el has no defineComponent call).
+    const stubDecl = manifest.modules
+      .flatMap((m: any) => m.declarations ?? [])
+      .find((d: any) => d.name === "StubEl");
+    expect(stubDecl?.superclass).toMatchObject({
+      name: "HTMLElement",
+      package: "global:",
+    });
+  });
+});
