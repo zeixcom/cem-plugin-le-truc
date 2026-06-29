@@ -89,6 +89,22 @@ export default defineComponent<CounterProps>('basic-counter', () => [])
     expect(exp?.declaration.name).toBe("BasicCounter");
   });
 
+  test("links the default js export to the synthesised declaration name", () => {
+    // The default analyzer emits {kind:'js', name:'default', declaration:{module}}
+    // for `export default defineComponent(...)` but omits declaration.name (it
+    // can't resolve the call expression's return type). The CEM schema requires
+    // Reference.name, so the plugin must patch the default export. This is a
+    // regression test for the "missing property 'name'" cem validate failure.
+    const manifest = runPlugin(src);
+    // biome-ignore lint/style/noNonNullAssertion: test
+    const mod = manifest.modules[0]!;
+    // biome-ignore lint/suspicious/noExplicitAny: test
+    const defaultExp = (mod.exports ?? []).find(
+      (e: any) => e.kind === "js" && e.name === "default",
+    );
+    expect(defaultExp?.declaration?.name).toBe("BasicCounter");
+  });
+
   test("extracts JSDoc description", () => {
     const manifest = runPlugin({
       "el.ts": `

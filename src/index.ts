@@ -331,6 +331,21 @@ export function leTrucPlugin(getTypeChecker?: () => TypeChecker): Plugin {
       moduleDoc.declarations = moduleDoc.declarations ?? [];
       moduleDoc.exports = moduleDoc.exports ?? [];
       moduleDoc.declarations.push(declaration);
+
+      // The default analyzer emits a `js`/`default` export for
+      // `export default defineComponent(...)` but can't resolve the call
+      // expression's return value to a named declaration, so it omits
+      // declaration.name. The CEM schema requires Reference.name, so without
+      // this fixup `cem validate` reports "missing property 'name'" on every
+      // component. Link the default export to our synthesised declaration.
+      for (const exp of moduleDoc.exports as Array<Record<string, unknown>>) {
+        if (exp.kind === "js" && exp.name === "default") {
+          const declRef = exp.declaration as Record<string, unknown> | undefined;
+          if (declRef && !declRef.name) declRef.name = name;
+          break;
+        }
+      }
+
       moduleDoc.exports.push({
         kind: "custom-element-definition",
         name: tagName,
