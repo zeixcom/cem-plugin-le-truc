@@ -371,7 +371,7 @@ export default defineComponent<{ data: string }>('custom-parser', ({ expose }: a
 // '../../..' rather than '@zeix/le-truc'. The plugin resolves the relative
 // specifier against the importing file and rewrites it to the owning package
 // name, so attribute detection works for monorepo / in-repo consumers too.
-describe("LT-004: relative imports resolved to package name", () => {
+describe("Relative imports resolved to package name", () => {
   test("detects as* parsers imported via relative path into the package root", () => {
     // Build a real throwaway package tree on disk so the plugin's filesystem
     // resolution walks up to a package.json named '@zeix/le-truc'.
