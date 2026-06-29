@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import type { Plugin } from "@custom-elements-manifest/analyzer";
 import type { TypeChecker } from "typescript";
 
@@ -6,6 +8,58 @@ import type { TypeChecker } from "typescript";
 // All uses of these parameters are typed `any` to avoid version-mismatch errors.
 
 const LE_TRUC_PACKAGE = "@zeix/le-truc";
+
+// Resolve an import specifier against the importing file. Relative specifiers
+// (e.g. '../../..') that resolve to a package root are rewritten to that
+// package's published name (e.g. '@zeix/le-truc'), so the import-map check in
+// analyzePhase matches regardless of whether the consumer imported the package
+// by name or by relative path into its own monorepo/source tree.
+const packageJsonCache = new Map<string, string | null>();
+
+function readPackageName(pkgDir: string): string | null {
+  if (packageJsonCache.has(pkgDir)) return packageJsonCache.get(pkgDir) ?? null;
+  let result: string | null = null;
+  try {
+    const raw = readFileSync(resolve(pkgDir, "package.json"), "utf8");
+    const name = JSON.parse(raw)?.name;
+    if (typeof name === "string" && name) result = name;
+  } catch {
+    // Not a package directory (no package.json or unreadable) — fall through.
+  }
+  packageJsonCache.set(pkgDir, result);
+  return result;
+}
+
+// Walk up from `resolved` until a package.json with a `name` is found.
+// Returns that name, or null if none is found before the filesystem root.
+function findOwningPackage(resolved: string): string | null {
+  let cur = resolved;
+  // Guard against symlink loops / absurd depth.
+  for (let i = 0; i < 32; i++) {
+    const pkgName = readPackageName(cur);
+    if (pkgName) return pkgName;
+    const parent = dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  return null;
+}
+
+function normalizeSpecifier(specifier: string, importer: string): string {
+  // Bare specifiers (e.g. '@zeix/le-truc', '@zeix/le-truc/parsers') need no
+  // resolution — only the package scope matters.
+  if (!specifier.startsWith(".")) {
+    const scope = specifier.startsWith("@")
+      ? specifier.split("/").slice(0, 2).join("/")
+      : specifier.split("/")[0];
+    return scope ?? specifier;
+  }
+  // Relative specifiers: resolve against the importing file, then find the
+  // nearest ancestor package.json. If `index` is implied (no extension), a
+  // directory or package root is the most likely target.
+  const resolved = resolve(dirname(importer), specifier);
+  return findOwningPackage(resolved) ?? specifier;
+}
 
 function tagToPascalCase(tag: string): string {
   return tag
@@ -85,7 +139,7 @@ export function leTrucPlugin(getTypeChecker?: () => TypeChecker): Plugin {
   return {
     name: "cem-plugin-le-truc",
 
-    // LT-004: Build import map keyed by local name → module specifier
+    // Build import map keyed by local name → module specifier
     collectPhase({
       ts,
       node,
@@ -98,10 +152,11 @@ export function leTrucPlugin(getTypeChecker?: () => TypeChecker): Plugin {
       context: Record<string, unknown>;
     }): void {
       if (!ts.isImportDeclaration(node)) return;
-      const specifier: string = node.moduleSpecifier.text;
+      const rawSpecifier: string = node.moduleSpecifier.text;
       const bindings = node.importClause?.namedBindings;
       if (!bindings || !ts.isNamedImports(bindings)) return;
       const filename: string = node.getSourceFile().fileName;
+      const specifier = normalizeSpecifier(rawSpecifier, filename);
       const map = getImportMap(context, filename);
       for (const el of bindings.elements) {
         map.set(el.name.text as string, specifier);
@@ -122,7 +177,7 @@ export function leTrucPlugin(getTypeChecker?: () => TypeChecker): Plugin {
       moduleDoc: any;
       context: Record<string, unknown>;
     }): void {
-      // LT-002: Detect defineComponent CallExpression
+      // Detect defineComponent CallExpression
       if (!ts.isCallExpression(node)) return;
       if (node.expression.getText() !== "defineComponent") return;
 
@@ -156,7 +211,7 @@ export function leTrucPlugin(getTypeChecker?: () => TypeChecker): Plugin {
         cssProperties: [],
       };
 
-      // LT-003: Resolve Props type via TypeScript type checker
+      // Resolve Props type via TypeScript type checker
       const typeArgNode = node.typeArguments?.[0];
       if (typeArgNode && getTypeChecker) {
         try {
@@ -183,7 +238,7 @@ export function leTrucPlugin(getTypeChecker?: () => TypeChecker): Plugin {
         }
       }
 
-      // LT-004: Traverse factory body for expose({}) to find attribute-backed props
+      // Traverse factory body for expose({}) to find attribute-backed props
       const factoryArg = node.arguments[1];
       if (factoryArg) {
         const exposeCall = findExposeCall(ts, factoryArg);
@@ -223,7 +278,7 @@ export function leTrucPlugin(getTypeChecker?: () => TypeChecker): Plugin {
         }
       }
 
-      // LT-005: Extract @slot, @fires, @csspart, @cssprop JSDoc tags
+      // Extract @slot, @fires, @csspart, @cssprop JSDoc tags
       if (jsDocNode) {
         // biome-ignore lint/suspicious/noExplicitAny: avoid version-mismatch errors
         const jsDocs: any[] = jsDocNode.jsDoc;

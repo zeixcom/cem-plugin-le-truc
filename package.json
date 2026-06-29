@@ -1,33 +1,41 @@
 {
-	"name": "@zeix/cem-plugin-le-truc",
-	"version": "0.1.0",
-	"description": "Custom Elements Manifest analyzer plugin for @zeix/le-truc factory components",
-	"keywords": [
-		"custom-elements-manifest",
-		"le-truc",
-		"web-components",
-		"analyzer-plugin"
-	],
-	"repository": {
-		"type": "git",
-		"url": "git+https://github.com/zeixcom/cem-plugin-le-truc.git"
-	},
-	"license": "MIT",
-	"author": "Esther Brunner",
-	"type": "module",
-	"main": "dist/index.js",
-	"types": "dist/index.d.ts",
-	"scripts": {
-		"build": "bun build src/index.ts --outdir dist --format esm && bunx --bun tsc -p tsconfig.build.json",
-		"test": "bun test"
-	},
-	"peerDependencies": {
-		"@custom-elements-manifest/analyzer": "^0.11",
-		"typescript": "^5.0"
-	},
-	"devDependencies": {
-		"@custom-elements-manifest/analyzer": "^0.11.0",
-		"@types/bun": "latest",
-		"typescript": "^5.4.0"
-	}
+  "name": "@zeix/cem-plugin-le-truc",
+  "version": "0.1.0",
+  "description": "Custom Elements Manifest analyzer plugin for @zeix/le-truc factory components",
+  "keywords": [
+    "custom-elements-manifest",
+    "le-truc",
+    "web-components",
+    "analyzer-plugin"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zeixcom/cem-plugin-le-truc.git"
+  },
+  "license": "MIT",
+  "author": "Esther Brunner",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --format esm --target node && bunx --bun tsc -p tsconfig.build.json",
+    "test": "bun test"
+  },
+  "peerDependencies": {
+    "@custom-elements-manifest/analyzer": "^0.11",
+    "typescript": "^5.0"
+  },
+  "devDependencies": {
+    "@custom-elements-manifest/analyzer": "^0.11.0",
+    "@types/bun": "latest",
+    "typescript": "^5.4.0"
+  }
 }

@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { create, ts } from "@custom-elements-manifest/analyzer";
 import { leTrucPlugin } from "./index.ts";
 
@@ -359,6 +362,59 @@ export default defineComponent<{ data: string }>('custom-parser', ({ expose }: a
     expect(decl.attributes[0]).toMatchObject({
       name: "data",
       fieldName: "data",
+    });
+  });
+});
+
+// ─── Test 7: Relative imports resolving to @zeix/le-truc ─────────────────────
+// Covers the self-analysis gap (NOTES.md): le-truc's own examples import via
+// '../../..' rather than '@zeix/le-truc'. The plugin resolves the relative
+// specifier against the importing file and rewrites it to the owning package
+// name, so attribute detection works for monorepo / in-repo consumers too.
+describe("Relative imports resolved to package name", () => {
+  test("detects as* parsers imported via relative path into the package root", () => {
+    // Build a real throwaway package tree on disk so the plugin's filesystem
+    // resolution walks up to a package.json named '@zeix/le-truc'.
+    const root = mkdtempSync(join(tmpdir(), "cem-rel-"));
+    const pkgDir = join(root, "fake-le-truc");
+    const examplesDir = join(pkgDir, "examples", "basic", "counter");
+    mkdirSync(examplesDir, { recursive: true });
+    writeFileSync(
+      join(pkgDir, "package.json"),
+      JSON.stringify({ name: "@zeix/le-truc", version: "0.0.0" }),
+    );
+    writeFileSync(
+      join(pkgDir, "index.ts"),
+      "export function asInteger() { return (v: string | null) => 0 }\n",
+    );
+    const counterPath = join(examplesDir, "basic-counter.ts");
+    const counterSrc = `import { asInteger } from '../../..'
+declare function defineComponent<P>(tag: string, factory: any): any
+
+export default defineComponent<{ count: number }>('basic-counter', ({ expose }: any) => {
+  expose({ count: asInteger() })
+  return []
+})
+`;
+    writeFileSync(counterPath, counterSrc);
+    const modules = [
+      ts.createSourceFile(
+        counterPath,
+        counterSrc,
+        ts.ScriptTarget.ESNext,
+        true,
+      ),
+    ];
+    const manifest = create({ modules, plugins: [leTrucPlugin()] });
+    rmSync(root, { recursive: true, force: true });
+    const decl = getDeclaration(manifest);
+    // Without resolution, the import map stores '../../..' which never equals
+    // '@zeix/le-truc' and attributes stay empty. With resolution, the owning
+    // package.json name is used, so the attribute is detected.
+    expect(decl.attributes ?? []).toHaveLength(1);
+    expect(decl.attributes[0]).toMatchObject({
+      name: "count",
+      fieldName: "count",
     });
   });
 });
