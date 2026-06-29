@@ -209,6 +209,7 @@ export function leTrucPlugin(getTypeChecker?: () => TypeChecker): Plugin {
         events: [],
         cssParts: [],
         cssProperties: [],
+        demos: [],
       };
 
       // Resolve Props type via TypeScript type checker
@@ -322,6 +323,28 @@ export function leTrucPlugin(getTypeChecker?: () => TypeChecker): Plugin {
                 name: propName,
                 description: propDesc,
               });
+              break;
+            }
+            case "demo": {
+              // @demo {url} description
+              // The URL in braces identifies the demo page; the remaining text
+              // is a markdown description. Matches the CEM Demo interface.
+              let url = "";
+              let desc = "";
+              const braceMatch = commentText.match(/^\{([^}]+)\}\s*(.*)$/s);
+              if (braceMatch && braceMatch[1]) {
+                url = braceMatch[1].trim();
+                desc = (braceMatch[2] ?? "").trim();
+              } else {
+                // Fallback: treat the whole comment as a URL with no description
+                url = commentText.trim();
+              }
+              if (url) {
+                (declaration.demos as unknown[]).push({
+                  url,
+                  ...(desc ? { description: desc } : {}),
+                });
+              }
               break;
             }
           }

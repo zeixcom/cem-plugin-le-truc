@@ -228,6 +228,43 @@ export default defineComponent<{}>('tagged-el', () => [])
       description: "The accent color",
     });
   });
+
+  test("extracts @demo tags with URL and description", () => {
+    const manifest = runPlugin({
+      "demo-el.ts": `
+declare function defineComponent<P>(tag: string, factory: any): any
+/**
+ * A demoable element.
+ * @demo {./examples/demo-el.html} Interactive demo showing all states
+ */
+export default defineComponent<{}>('demo-el', () => [])
+`,
+    });
+    const decl = getDeclaration(manifest);
+    expect(decl.demos).toHaveLength(1);
+    expect(decl.demos[0]).toMatchObject({
+      url: "./examples/demo-el.html",
+      description: "Interactive demo showing all states",
+    });
+  });
+
+  test("extracts @demo tag with URL only (no description)", () => {
+    const manifest = runPlugin({
+      "demo-el2.ts": `
+declare function defineComponent<P>(tag: string, factory: any): any
+/**
+ * @demo {https://example.com/demo.html}
+ */
+export default defineComponent<{}>('demo-el2', () => [])
+`,
+    });
+    const decl = getDeclaration(manifest);
+    expect(decl.demos).toHaveLength(1);
+    expect(decl.demos[0]).toMatchObject({
+      url: "https://example.com/demo.html",
+    });
+    expect(decl.demos[0].description).toBeUndefined();
+  });
 });
 
 // ─── Test 4: No expose() call ───────────────────────────────────────────────
