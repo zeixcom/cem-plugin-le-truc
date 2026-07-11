@@ -3,19 +3,35 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { create, ts } from "@custom-elements-manifest/analyzer";
-import type { ClassDeclaration, Declaration, Module } from "custom-elements-manifest/schema";
+import type {
+  ClassDeclaration,
+  ClassField,
+  CustomElement,
+  Declaration,
+  Package,
+} from "custom-elements-manifest/schema";
 import { leTrucPlugin } from "./index.ts";
 
-// Run the plugin without a type checker (for LT-002, LT-004, LT-005)
-function runPlugin(sources: Record<string, string>) {
+// The plugin produces class declarations augmented with custom-element-specific fields
+type PluginDeclaration = ClassDeclaration & CustomElement;
+
+function isCustomElementDeclaration(d: Declaration): d is PluginDeclaration {
+  return d.kind === "class" && "customElement" in d && d.customElement === true;
+}
+
+// Run the plugin without a type checker.
+// The analyzer's index.d.ts doesn't declare `create` (only the Plugin
+// interfaces), so its return type is `any` — assert the documented shape once
+// here so every test works with a typed Package.
+function runPlugin(sources: Record<string, string>): Package {
   const modules = Object.entries(sources).map(([fn, src]) =>
     ts.createSourceFile(fn, src, ts.ScriptTarget.ESNext, true),
   );
-  return create({ modules, plugins: [leTrucPlugin()] });
+  return create({ modules, plugins: [leTrucPlugin()] }) as Package;
 }
 
-// Run the plugin with a type checker (for LT-003)
-function runPluginWithTypeChecker(sources: Record<string, string>) {
+// Run the plugin with a type checker
+function runPluginWithTypeChecker(sources: Record<string, string>): Package {
   const host = ts.createCompilerHost({});
   host.getSourceFile = (fn: string, langVer: number) => {
     if (fn in sources)
@@ -40,26 +56,25 @@ function runPluginWithTypeChecker(sources: Record<string, string>) {
   const typeChecker = program.getTypeChecker();
   const modules = Object.keys(sources)
     .map((fn) => program.getSourceFile(fn))
-    // biome-ignore lint/suspicious/noExplicitAny: test
-    .filter((sf): sf is typeof ts.Node => sf != null) as any[];
+    .filter((sf): sf is NonNullable<typeof sf> => sf != null);
 
-  return create({ modules, plugins: [leTrucPlugin(() => typeChecker)] });
+  return create({ modules, plugins: [leTrucPlugin(() => typeChecker)] }) as Package;
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: test
-function getDeclaration(manifest: any) {
-  return (
-    manifest.modules
-      // biome-ignore lint/suspicious/noExplicitAny: test
-      .flatMap((m: any) => m.declarations ?? [])
-      // biome-ignore lint/suspicious/noExplicitAny: test
-      .find((d: any) => d.customElement === true) as any
-  );
+// Every test manifest contains exactly one Le Truc component, so a missing
+// declaration is a test failure, not a case to type around — throw instead of
+// returning undefined to keep call sites free of null-guards.
+function getDeclaration(manifest: Package): PluginDeclaration {
+  const decl = manifest.modules
+    .flatMap((m) => m.declarations ?? [])
+    .find(isCustomElementDeclaration);
+  if (!decl) throw new Error("manifest has no custom-element declaration");
+  return decl;
 }
 
 // ─── Test 1: Basic component ───────────────────────────────────────────────
 
-describe("LT-002: defineComponent detection", () => {
+describe("defineComponent detection", () => {
   const src = {
     "counter.ts": `
 declare function defineComponent<P>(tag: string, factory: any): any
@@ -83,8 +98,7 @@ export default defineComponent<CounterProps>('basic-counter', () => [])
     // biome-ignore lint/style/noNonNullAssertion: test
     const mod = manifest.modules[0]!;
     const exp = (mod.exports ?? []).find(
-      // biome-ignore lint/suspicious/noExplicitAny: test
-      (e: any) => e.kind === "custom-element-definition",
+      (e) => e.kind === "custom-element-definition",
     );
     expect(exp?.name).toBe("basic-counter");
     expect(exp?.declaration.name).toBe("BasicCounter");
@@ -100,8 +114,7 @@ export default defineComponent<CounterProps>('basic-counter', () => [])
     // biome-ignore lint/style/noNonNullAssertion: test
     const mod = manifest.modules[0]!;
     const defaultExp = (mod.exports ?? []).find(
-      // biome-ignore lint/suspicious/noExplicitAny: test
-      (e: any) => e.kind === "js" && e.name === "default",
+      (e) => e.kind === "js" && e.name === "default",
     );
     expect(defaultExp?.declaration?.name).toBe("BasicCounter");
   });
@@ -122,7 +135,7 @@ export default defineComponent<{}>('basic-hello', () => [])
 
 // ─── Test 2: Props type resolution ─────────────────────────────────────────
 
-describe("LT-003: Props member resolution via type checker", () => {
+describe("Props member resolution via type checker", () => {
   const src = {
     "typed.ts": `
 declare function defineComponent<P extends object>(tag: string, factory: any): any
@@ -137,27 +150,27 @@ export default defineComponent<TypedProps>('typed-el', () => [])
 `,
   };
 
+  const findField = (decl: PluginDeclaration, name: string) =>
+    (decl.members ?? []).find(
+      (m): m is ClassField => m.kind === "field" && m.name === name,
+    );
+
   test("builds members from Props type", () => {
     const manifest = runPluginWithTypeChecker(src);
-    const decl = getDeclaration(manifest);
-    expect(decl.members).toHaveLength(2);
+    expect(getDeclaration(manifest).members).toHaveLength(2);
   });
 
   test("sets field name and type", () => {
     const manifest = runPluginWithTypeChecker(src);
-    const decl = getDeclaration(manifest);
-    // biome-ignore lint/suspicious/noExplicitAny: test
-    const countField = decl.members.find((m: any) => m.name === "count");
-    expect(countField.kind).toBe("field");
-    expect(countField.type.text).toBe("number");
+    const countField = findField(getDeclaration(manifest), "count");
+    expect(countField?.kind).toBe("field");
+    expect(countField?.type?.text).toBe("number");
   });
 
   test("includes JSDoc description from Props property", () => {
     const manifest = runPluginWithTypeChecker(src);
-    const decl = getDeclaration(manifest);
-    // biome-ignore lint/suspicious/noExplicitAny: test
-    const countField = decl.members.find((m: any) => m.name === "count");
-    expect(countField.description).toBe("The current count value.");
+    const countField = findField(getDeclaration(manifest), "count");
+    expect(countField?.description).toBe("The current count value.");
   });
 
   test("members are absent (not populated) without type checker", () => {
@@ -168,7 +181,7 @@ export default defineComponent<TypedProps>('typed-el', () => [])
 
 // ─── Test 3: JSDoc tag extraction ──────────────────────────────────────────
 
-describe("LT-005: JSDoc tag extraction", () => {
+describe("JSDoc tag extraction", () => {
   const src = {
     "tagged.ts": `
 declare function defineComponent<P>(tag: string, factory: any): any
@@ -187,13 +200,13 @@ export default defineComponent<{}>('tagged-el', () => [])
 
   test("extracts @slot tags (named and anonymous)", () => {
     const manifest = runPlugin(src);
-    const decl = getDeclaration(manifest);
-    expect(decl.slots).toHaveLength(2);
-    expect(decl.slots[0]).toMatchObject({
+    const slots = getDeclaration(manifest).slots ?? [];
+    expect(slots).toHaveLength(2);
+    expect(slots[0]).toMatchObject({
       name: "",
       description: "Default slot for content",
     });
-    expect(decl.slots[1]).toMatchObject({
+    expect(slots[1]).toMatchObject({
       name: "header",
       description: "Header slot",
     });
@@ -201,9 +214,9 @@ export default defineComponent<{}>('tagged-el', () => [])
 
   test("extracts @fires tags", () => {
     const manifest = runPlugin(src);
-    const decl = getDeclaration(manifest);
-    expect(decl.events).toHaveLength(1);
-    expect(decl.events[0]).toMatchObject({
+    const events = getDeclaration(manifest).events ?? [];
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
       name: "change",
       type: { text: "CustomEvent" },
       description: "Fired when value changes",
@@ -212,9 +225,9 @@ export default defineComponent<{}>('tagged-el', () => [])
 
   test("extracts @csspart tags", () => {
     const manifest = runPlugin(src);
-    const decl = getDeclaration(manifest);
-    expect(decl.cssParts).toHaveLength(1);
-    expect(decl.cssParts[0]).toMatchObject({
+    const cssParts = getDeclaration(manifest).cssParts ?? [];
+    expect(cssParts).toHaveLength(1);
+    expect(cssParts[0]).toMatchObject({
       name: "container",
       description: "The outer container",
     });
@@ -222,9 +235,9 @@ export default defineComponent<{}>('tagged-el', () => [])
 
   test("extracts @cssprop tags", () => {
     const manifest = runPlugin(src);
-    const decl = getDeclaration(manifest);
-    expect(decl.cssProperties).toHaveLength(1);
-    expect(decl.cssProperties[0]).toMatchObject({
+    const cssProperties = getDeclaration(manifest).cssProperties ?? [];
+    expect(cssProperties).toHaveLength(1);
+    expect(cssProperties[0]).toMatchObject({
       name: "--tag-color",
       description: "The accent color",
     });
@@ -241,9 +254,9 @@ declare function defineComponent<P>(tag: string, factory: any): any
 export default defineComponent<{}>('demo-el', () => [])
 `,
     });
-    const decl = getDeclaration(manifest);
-    expect(decl.demos).toHaveLength(1);
-    expect(decl.demos[0]).toMatchObject({
+    const demos = getDeclaration(manifest).demos ?? [];
+    expect(demos).toHaveLength(1);
+    expect(demos[0]).toMatchObject({
       url: "./examples/demo-el.html",
       description: "Interactive demo showing all states",
     });
@@ -259,12 +272,12 @@ declare function defineComponent<P>(tag: string, factory: any): any
 export default defineComponent<{}>('demo-el2', () => [])
 `,
     });
-    const decl = getDeclaration(manifest);
-    expect(decl.demos).toHaveLength(1);
-    expect(decl.demos[0]).toMatchObject({
+    const demos = getDeclaration(manifest).demos ?? [];
+    expect(demos).toHaveLength(1);
+    expect(demos[0]).toMatchObject({
       url: "https://example.com/demo.html",
     });
-    expect(decl.demos[0].description).toBeUndefined();
+    expect(demos[0]?.description).toBeUndefined();
   });
 });
 
@@ -272,7 +285,7 @@ export default defineComponent<{}>('demo-el2', () => [])
 // Attributes read via host.getAttribute() at connect time but never exposed as
 // reactive properties. Declared in JSDoc; emitted WITHOUT fieldName.
 
-describe("LT-006: @attribute / @attr JSDoc tags", () => {
+describe("@attribute / @attr JSDoc tags", () => {
   test("extracts @attribute with type and description, no fieldName", () => {
     const manifest = runPlugin({
       "attr-el.ts": `
@@ -284,14 +297,14 @@ declare function defineComponent<P>(tag: string, factory: any): any
 export default defineComponent<{}>('attr-el', () => [])
 `,
     });
-    const decl = getDeclaration(manifest);
-    expect(decl.attributes).toHaveLength(1);
-    expect(decl.attributes[0]).toMatchObject({
+    const attributes = getDeclaration(manifest).attributes ?? [];
+    expect(attributes).toHaveLength(1);
+    expect(attributes[0]).toMatchObject({
       name: "orientation",
       type: { text: "'horizontal'|'vertical'" },
       description: "Layout direction. Read once at connect time.",
     });
-    expect(decl.attributes[0].fieldName).toBeUndefined();
+    expect(attributes[0]?.fieldName).toBeUndefined();
   });
 
   test("@attr alias produces the identical entry", () => {
@@ -304,9 +317,9 @@ declare function defineComponent<P>(tag: string, factory: any): any
 export default defineComponent<{}>('attr-alias', () => [])
 `,
     });
-    const decl = getDeclaration(manifest);
-    expect(decl.attributes).toHaveLength(1);
-    expect(decl.attributes[0]).toMatchObject({
+    const attributes = getDeclaration(manifest).attributes ?? [];
+    expect(attributes).toHaveLength(1);
+    expect(attributes[0]).toMatchObject({
       name: "theme",
       type: { text: "string" },
       description: "Color theme name.",
@@ -323,8 +336,8 @@ declare function defineComponent<P>(tag: string, factory: any): any
 export default defineComponent<{}>('attr-default', () => [])
 `,
     });
-    const decl = getDeclaration(manifest);
-    expect(decl.attributes[0]).toMatchObject({
+    const attributes = getDeclaration(manifest).attributes ?? [];
+    expect(attributes[0]).toMatchObject({
       name: "split",
       type: { text: "number" },
       default: "0.5",
@@ -342,11 +355,11 @@ declare function defineComponent<P>(tag: string, factory: any): any
 export default defineComponent<{}>('attr-bare', () => [])
 `,
     });
-    const decl = getDeclaration(manifest);
-    expect(decl.attributes).toHaveLength(1);
-    expect(decl.attributes[0]).toMatchObject({ name: "compact" });
-    expect(decl.attributes[0].type).toBeUndefined();
-    expect(decl.attributes[0].description).toBeUndefined();
+    const attributes = getDeclaration(manifest).attributes ?? [];
+    expect(attributes).toHaveLength(1);
+    expect(attributes[0]).toMatchObject({ name: "compact" });
+    expect(attributes[0]?.type).toBeUndefined();
+    expect(attributes[0]?.description).toBeUndefined();
   });
 
   test("tag without a name is ignored", () => {
@@ -379,10 +392,10 @@ export default defineComponent<MergeProps>('attr-merge', ({ expose }: any) => {
 })
 `,
     });
-    const decl = getDeclaration(manifest);
-    expect(decl.attributes).toHaveLength(1);
+    const attributes = getDeclaration(manifest).attributes ?? [];
+    expect(attributes).toHaveLength(1);
     // fieldName and Props-derived type win; JSDoc fills description/default.
-    expect(decl.attributes[0]).toMatchObject({
+    expect(attributes[0]).toMatchObject({
       name: "count",
       fieldName: "count",
       type: { text: "number" },
@@ -394,7 +407,7 @@ export default defineComponent<MergeProps>('attr-merge', ({ expose }: any) => {
 
 // ─── Test 4: No expose() call ───────────────────────────────────────────────
 
-describe("LT-004: no expose() — members from Props, attributes empty", () => {
+describe("No expose() — members from Props, attributes empty", () => {
   const src = {
     "no-expose.ts": `
 declare function defineComponent<P extends object>(tag: string, factory: any): any
@@ -412,15 +425,15 @@ export default defineComponent<NoExposeProps>('no-expose', () => [])
 
   test("members are populated from Props type when type checker provided", () => {
     const manifest = runPluginWithTypeChecker(src);
-    const decl = getDeclaration(manifest);
-    expect(decl.members).toHaveLength(1);
-    expect(decl.members[0].name).toBe("value");
+    const members = getDeclaration(manifest).members ?? [];
+    expect(members).toHaveLength(1);
+    expect(members[0]?.name).toBe("value");
   });
 });
 
 // ─── Test 5: HTMLElementTagNameMap augmentation ──────────────────────────
 
-describe("LT-002: HTMLElementTagNameMap augmentation coexistence", () => {
+describe("HTMLElementTagNameMap augmentation coexistence", () => {
   const src = {
     "with-tagmap.ts": `
 declare function defineComponent<P>(tag: string, factory: any): any
@@ -440,10 +453,8 @@ export default defineComponent<MapProps>('map-counter', () => [])
   test("produces exactly one custom element declaration", () => {
     const manifest = runPlugin(src);
     const decls = manifest.modules
-      // biome-ignore lint/suspicious/noExplicitAny: test
-      .flatMap((m: any) => m.declarations ?? [])
-      // biome-ignore lint/suspicious/noExplicitAny: test
-      .filter((d: any) => d.customElement === true);
+      .flatMap((m) => m.declarations ?? [])
+      .filter(isCustomElementDeclaration);
     expect(decls).toHaveLength(1);
   });
 
@@ -455,7 +466,7 @@ export default defineComponent<MapProps>('map-counter', () => [])
 
 // ─── Test 6: Parser-backed attributes ──────────────────────────────────────
 
-describe("LT-004: expose() with as* parsers", () => {
+describe("expose() with as* parsers", () => {
   const parserSrc = {
     "parser-el.ts": `
 import { asInteger, asBoolean, asString } from '@zeix/le-truc'
@@ -477,22 +488,21 @@ export default defineComponent<ParserProps>('parser-el', ({ expose }: any) => {
 
   test("detects as* parser calls from @zeix/le-truc as attributes", () => {
     const manifest = runPlugin(parserSrc);
-    const decl = getDeclaration(manifest);
-    expect(decl.attributes).toHaveLength(3);
+    expect(getDeclaration(manifest).attributes).toHaveLength(3);
   });
 
   test("sets name and fieldName on each attribute", () => {
     const manifest = runPlugin(parserSrc);
-    const decl = getDeclaration(manifest);
-    expect(decl.attributes[0]).toMatchObject({
+    const attributes = getDeclaration(manifest).attributes ?? [];
+    expect(attributes[0]).toMatchObject({
       name: "count",
       fieldName: "count",
     });
-    expect(decl.attributes[1]).toMatchObject({
+    expect(attributes[1]).toMatchObject({
       name: "active",
       fieldName: "active",
     });
-    expect(decl.attributes[2]).toMatchObject({
+    expect(attributes[2]).toMatchObject({
       name: "label",
       fieldName: "label",
     });
@@ -500,9 +510,9 @@ export default defineComponent<ParserProps>('parser-el', ({ expose }: any) => {
 
   test("copies type from matching member when type checker is provided", () => {
     const manifest = runPluginWithTypeChecker(parserSrc);
-    const decl = getDeclaration(manifest);
-    // biome-ignore lint/suspicious/noExplicitAny: test
-    const countAttr = decl.attributes.find((a: any) => a.name === "count");
+    const countAttr = (getDeclaration(manifest).attributes ?? []).find(
+      (a) => a.name === "count",
+    );
     expect(countAttr?.type?.text).toBe("number");
   });
 
@@ -522,7 +532,7 @@ export default defineComponent<{ x: number }>('custom-el', ({ expose }: any) => 
   });
 });
 
-describe("LT-004: expose() with asParser()", () => {
+describe("expose() with asParser()", () => {
   test("detects asParser() call as attribute-backed", () => {
     const manifest = runPlugin({
       "as-parser.ts": `
@@ -535,9 +545,9 @@ export default defineComponent<{ data: string }>('custom-parser', ({ expose }: a
 })
 `,
     });
-    const decl = getDeclaration(manifest);
-    expect(decl.attributes).toHaveLength(1);
-    expect(decl.attributes[0]).toMatchObject({
+    const attributes = getDeclaration(manifest).attributes ?? [];
+    expect(attributes).toHaveLength(1);
+    expect(attributes[0]).toMatchObject({
       name: "data",
       fieldName: "data",
     });
@@ -583,21 +593,67 @@ export default defineComponent<{ count: number }>('basic-counter', ({ expose }: 
         true,
       ),
     ];
-    const manifest = create({ modules, plugins: [leTrucPlugin()] });
+    const manifest = create({ modules, plugins: [leTrucPlugin()] }) as Package;
     rmSync(root, { recursive: true, force: true });
-    const decl = getDeclaration(manifest);
     // Without resolution, the import map stores '../../..' which never equals
     // '@zeix/le-truc' and attributes stay empty. With resolution, the owning
     // package.json name is used, so the attribute is detected.
-    expect(decl.attributes ?? []).toHaveLength(1);
-    expect(decl.attributes[0]).toMatchObject({
+    const attributes = getDeclaration(manifest).attributes ?? [];
+    expect(attributes).toHaveLength(1);
+    expect(attributes[0]).toMatchObject({
       name: "count",
       fieldName: "count",
     });
   });
 });
 
-// ─── Test 8: superclass package field for built-in types ────────────────────
+// ─── Test 8: module paths are relativized against cwd ───────────────────────
+// The overrideModuleCreation boilerplate feeds ts.createProgram source files
+// to the analyzer, whose fileNames are absolute — so module.path and every
+// Reference.module came out absolute: non-portable (CI runner paths in the
+// published manifest) and CEM-schema-non-conformant (paths must be
+// package-root-relative). packageLinkPhase now relativizes every
+// "path"/"module" string under process.cwd(); paths outside cwd are kept.
+describe("packageLinkPhase: module path relativization", () => {
+  test("rewrites absolute module.path and Reference.module relative to cwd", () => {
+    const absPath = join(process.cwd(), "examples", "abs-el.ts");
+    const manifest = runPlugin({
+      [absPath]: `
+declare function defineComponent<P>(tag: string, factory: any): any
+export default defineComponent<{}>('abs-el', () => [])
+`,
+    });
+    const mod = manifest.modules[0];
+    expect(mod?.path).toBe("examples/abs-el.ts");
+    const ceDef = (mod?.exports ?? []).find(
+      (e) => e.kind === "custom-element-definition",
+    );
+    expect(ceDef?.declaration.module).toBe("examples/abs-el.ts");
+    const defaultExp = (mod?.exports ?? []).find(
+      (e) => e.kind === "js" && e.name === "default",
+    );
+    expect(defaultExp?.declaration.module).toBe("examples/abs-el.ts");
+  });
+
+  test("leaves relative paths and paths outside cwd untouched", () => {
+    const outside = join(tmpdir(), "elsewhere", "out-el.ts");
+    const manifest = runPlugin({
+      "already-relative.ts": `
+declare function defineComponent<P>(tag: string, factory: any): any
+export default defineComponent<{}>('rel-el', () => [])
+`,
+      [outside]: `
+declare function defineComponent<P>(tag: string, factory: any): any
+export default defineComponent<{}>('out-el', () => [])
+`,
+    });
+    const paths = manifest.modules.map((m) => m.path);
+    expect(paths).toContain("already-relative.ts");
+    expect(paths).toContain(outside);
+  });
+});
+
+// ─── Test 9: superclass package field for built-in types ────────────────────
 // The default analyzer emits superclass: { name: "HTMLElement" } without
 // `package: "global:"` for declarations it produces (e.g. structural-only
 // `class extends HTMLElement {}` stubs). The CEM spec requires built-in types
@@ -614,8 +670,10 @@ customElements.define('stub-el', StubEl)
     // Find the declaration produced by the default analyzer (not our plugin's
     // synthesised one — stub-el has no defineComponent call).
     const stubDecl = manifest.modules
-      .flatMap((m: Module) => m.declarations ?? [])
-      .find((d: Declaration): d is ClassDeclaration => d.kind === "class" && d.name === "StubEl");
+      .flatMap((m) => m.declarations ?? [])
+      .find(
+        (d): d is ClassDeclaration => d.kind === "class" && d.name === "StubEl",
+      );
     expect(stubDecl?.superclass).toMatchObject({
       name: "HTMLElement",
       package: "global:",

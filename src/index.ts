@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { Plugin } from "@custom-elements-manifest/analyzer";
 import type { TypeChecker } from "typescript";
 
@@ -461,19 +461,56 @@ export function leTrucPlugin(getTypeChecker?: () => TypeChecker): Plugin {
       });
     },
 
-    // After all modules are analysed, fix up superclass references on
-    // declarations handled by the default analyzer (e.g. structural-only
-    // `class extends HTMLElement {}` stubs) so built-in types declare
-    // `package: "global:"` per the CEM spec. Without it, `cem validate`
-    // warns: "superclass HTMLElement is a built-in type but missing package
-    // field". Our synthesised Le Truc declarations have no superclass field,
-    // so this only touches declarations the default analyzer produced.
+    // After all modules are analysed, two manifest-wide fixups:
+    //
+    // 1. Relativize module paths. The overrideModuleCreation boilerplate this
+    //    plugin requires feeds ts.createProgram source files to the analyzer,
+    //    whose fileNames are absolute — so module.path and every
+    //    Reference.module come out as absolute local paths: non-portable
+    //    (a manifest generated in CI carries runner paths) and CEM-schema-
+    //    non-conformant (paths must be package-root-relative). Every "path"
+    //    and "module" string under process.cwd() is rewritten relative to it,
+    //    POSIX-separated; paths outside cwd are left untouched.
+    //
+    // 2. Fix up superclass references on declarations handled by the default
+    //    analyzer (e.g. structural-only `class extends HTMLElement {}` stubs)
+    //    so built-in types declare `package: "global:"` per the CEM spec.
+    //    Without it, `cem validate` warns: "superclass HTMLElement is a
+    //    built-in type but missing package field". Our synthesised Le Truc
+    //    declarations have no superclass field, so this only touches
+    //    declarations the default analyzer produced.
     packageLinkPhase({
       customElementsManifest,
     }: {
       // biome-ignore lint/suspicious/noExplicitAny: avoid version-mismatch errors
       customElementsManifest: any;
     }): void {
+      const cwd = process.cwd();
+      const relativize = (p: string): string => {
+        if (!isAbsolute(p)) return p;
+        const rel = relative(cwd, p);
+        // Outside cwd ("../…") — better an absolute path than a wrong one.
+        if (rel.startsWith("..")) return p;
+        return rel.split(sep).join("/");
+      };
+      // Rewrite every "path"/"module" string property, wherever it appears
+      // (module.path, exports[].declaration.module, members[].inheritedFrom
+      // .module, …) — the CEM schema uses exactly these two keys for
+      // module-path strings.
+      const fixPaths = (value: unknown): void => {
+        if (Array.isArray(value)) {
+          for (const item of value) fixPaths(item);
+          return;
+        }
+        if (value === null || typeof value !== "object") return;
+        const rec = value as Record<string, unknown>;
+        if (typeof rec.path === "string") rec.path = relativize(rec.path);
+        if (typeof rec.module === "string")
+          rec.module = relativize(rec.module);
+        for (const child of Object.values(rec)) fixPaths(child);
+      };
+      fixPaths(customElementsManifest.modules ?? []);
+
       const BUILT_INS = new Set([
         "HTMLElement",
         "SVGElement",

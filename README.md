@@ -54,7 +54,7 @@ This generates `custom-elements.json` from your Le Truc components.
 | `slots`, `events`, `cssParts`, `cssProperties` | `@slot`, `@fires`, `@csspart`, `@cssprop` JSDoc tags |
 | `demos` | `@demo {url} description` JSDoc tags |
 
-The plugin also fixes up two schema-compliance gaps in the default analyzer's output: it links the default `export` to the synthesised declaration `name` (required by `Reference.name`), and adds `package: "global:"` to built-in `superclass` references (e.g. `HTMLElement` stubs).
+The plugin also fixes up three schema-compliance gaps in the default analyzer's output: it links the default `export` to the synthesised declaration `name` (required by `Reference.name`), adds `package: "global:"` to built-in `superclass` references (e.g. `HTMLElement` stubs), and relativizes module paths against the working directory — the `overrideModuleCreation` boilerplate feeds `ts.createProgram` source files whose names are absolute, which would otherwise leak local (or CI-runner) paths into the published manifest.
 
 ## JSDoc contract
 
