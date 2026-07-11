@@ -102,6 +102,55 @@ function parseNameDesc(text: string): { name: string; description: string } {
   return { name: trimmed, description: "" };
 }
 
+// Parse an @attribute / @attr tag comment:
+//   {type} name - description
+//   {type} [name=default] - description
+// All three parts are optional except the name.
+function parseAttributeTag(text: string): {
+  name: string;
+  type?: string;
+  default?: string;
+  description: string;
+} {
+  let rest = text.trim();
+  let type: string | undefined;
+  if (rest.startsWith("{")) {
+    // Brace-balanced scan so union/object types ({'a'|'b'}, {{a: string}})
+    // survive intact where a naive [^}]+ regex would truncate.
+    let depth = 0;
+    let end = -1;
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === "{") depth++;
+      else if (rest[i] === "}") {
+        depth--;
+        if (depth === 0) {
+          end = i;
+          break;
+        }
+      }
+    }
+    if (end !== -1) {
+      const t = rest.slice(1, end).trim();
+      if (t) type = t;
+      rest = rest.slice(end + 1).trim();
+    }
+  }
+  const bracket = rest.match(/^\[([^\]=]+)(?:=([^\]]*))?\]\s*(.*)$/s);
+  if (bracket) {
+    const remainder = (bracket[3] ?? "").trim();
+    return {
+      name: (bracket[1] ?? "").trim(),
+      type,
+      default: bracket[2]?.trim(),
+      description: remainder.startsWith("- ")
+        ? remainder.slice(2).trim()
+        : remainder,
+    };
+  }
+  const { name, description } = parseNameDesc(rest);
+  return { name, type, description };
+}
+
 // biome-ignore lint/suspicious/noExplicitAny: avoid version-mismatch errors
 function findExposeCall(ts: any, node: any): any | undefined {
   // biome-ignore lint/suspicious/noExplicitAny: avoid version-mismatch errors
@@ -325,6 +374,42 @@ export function leTrucPlugin(getTypeChecker?: () => TypeChecker): Plugin {
               });
               break;
             }
+            case "attr":
+            case "attribute": {
+              // Connect-time attributes: read via host.getAttribute() in the
+              // factory but never exposed as reactive properties. They have no
+              // Props entry and no expose() parser, so JSDoc is the only
+              // possible source. Emitted WITHOUT fieldName — the CEM schema's
+              // representation of an attribute not backed by a property.
+              const parsed = parseAttributeTag(commentText);
+              if (!parsed.name) break;
+              const attrs = declaration.attributes as Array<
+                Record<string, unknown>
+              >;
+              const existing = attrs.find((a) => a.name === parsed.name);
+              if (existing) {
+                // Merge with an expose()-derived entry: the Props type stays
+                // the source of truth for `type`; JSDoc supplies description
+                // and default, which static analysis cannot.
+                if (!existing.description && parsed.description)
+                  existing.description = parsed.description;
+                if (!existing.type && parsed.type)
+                  existing.type = { text: parsed.type };
+                if (parsed.default != null) existing.default = parsed.default;
+              } else {
+                attrs.push({
+                  name: parsed.name,
+                  ...(parsed.type ? { type: { text: parsed.type } } : {}),
+                  ...(parsed.default != null
+                    ? { default: parsed.default }
+                    : {}),
+                  ...(parsed.description
+                    ? { description: parsed.description }
+                    : {}),
+                });
+              }
+              break;
+            }
             case "demo": {
               // @demo {url} description
               // The URL in braces identifies the demo page; the remaining text
@@ -332,7 +417,7 @@ export function leTrucPlugin(getTypeChecker?: () => TypeChecker): Plugin {
               let url = "";
               let desc = "";
               const braceMatch = commentText.match(/^\{([^}]+)\}\s*(.*)$/s);
-              if (braceMatch && braceMatch[1]) {
+              if (braceMatch?.[1]) {
                 url = braceMatch[1].trim();
                 desc = (braceMatch[2] ?? "").trim();
               } else {

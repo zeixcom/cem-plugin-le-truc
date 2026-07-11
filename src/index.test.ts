@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { create, ts } from "@custom-elements-manifest/analyzer";
+import type { ClassDeclaration, Declaration, Module } from "custom-elements-manifest/schema";
 import { leTrucPlugin } from "./index.ts";
 
 // Run the plugin without a type checker (for LT-002, LT-004, LT-005)
@@ -98,8 +99,8 @@ export default defineComponent<CounterProps>('basic-counter', () => [])
     const manifest = runPlugin(src);
     // biome-ignore lint/style/noNonNullAssertion: test
     const mod = manifest.modules[0]!;
-    // biome-ignore lint/suspicious/noExplicitAny: test
     const defaultExp = (mod.exports ?? []).find(
+      // biome-ignore lint/suspicious/noExplicitAny: test
       (e: any) => e.kind === "js" && e.name === "default",
     );
     expect(defaultExp?.declaration?.name).toBe("BasicCounter");
@@ -264,6 +265,130 @@ export default defineComponent<{}>('demo-el2', () => [])
       url: "https://example.com/demo.html",
     });
     expect(decl.demos[0].description).toBeUndefined();
+  });
+});
+
+// ─── Test 3b: @attribute / @attr tags (connect-time attributes) ─────────────
+// Attributes read via host.getAttribute() at connect time but never exposed as
+// reactive properties. Declared in JSDoc; emitted WITHOUT fieldName.
+
+describe("LT-006: @attribute / @attr JSDoc tags", () => {
+  test("extracts @attribute with type and description, no fieldName", () => {
+    const manifest = runPlugin({
+      "attr-el.ts": `
+declare function defineComponent<P>(tag: string, factory: any): any
+/**
+ * A configurable element.
+ * @attribute {'horizontal'|'vertical'} orientation - Layout direction. Read once at connect time.
+ */
+export default defineComponent<{}>('attr-el', () => [])
+`,
+    });
+    const decl = getDeclaration(manifest);
+    expect(decl.attributes).toHaveLength(1);
+    expect(decl.attributes[0]).toMatchObject({
+      name: "orientation",
+      type: { text: "'horizontal'|'vertical'" },
+      description: "Layout direction. Read once at connect time.",
+    });
+    expect(decl.attributes[0].fieldName).toBeUndefined();
+  });
+
+  test("@attr alias produces the identical entry", () => {
+    const manifest = runPlugin({
+      "attr-alias.ts": `
+declare function defineComponent<P>(tag: string, factory: any): any
+/**
+ * @attr {string} theme - Color theme name.
+ */
+export default defineComponent<{}>('attr-alias', () => [])
+`,
+    });
+    const decl = getDeclaration(manifest);
+    expect(decl.attributes).toHaveLength(1);
+    expect(decl.attributes[0]).toMatchObject({
+      name: "theme",
+      type: { text: "string" },
+      description: "Color theme name.",
+    });
+  });
+
+  test("[name=default] square-bracket form sets default", () => {
+    const manifest = runPlugin({
+      "attr-default.ts": `
+declare function defineComponent<P>(tag: string, factory: any): any
+/**
+ * @attribute {number} [split=0.5] - Initial split ratio.
+ */
+export default defineComponent<{}>('attr-default', () => [])
+`,
+    });
+    const decl = getDeclaration(manifest);
+    expect(decl.attributes[0]).toMatchObject({
+      name: "split",
+      type: { text: "number" },
+      default: "0.5",
+      description: "Initial split ratio.",
+    });
+  });
+
+  test("bare tag with name only", () => {
+    const manifest = runPlugin({
+      "attr-bare.ts": `
+declare function defineComponent<P>(tag: string, factory: any): any
+/**
+ * @attribute compact
+ */
+export default defineComponent<{}>('attr-bare', () => [])
+`,
+    });
+    const decl = getDeclaration(manifest);
+    expect(decl.attributes).toHaveLength(1);
+    expect(decl.attributes[0]).toMatchObject({ name: "compact" });
+    expect(decl.attributes[0].type).toBeUndefined();
+    expect(decl.attributes[0].description).toBeUndefined();
+  });
+
+  test("tag without a name is ignored", () => {
+    const manifest = runPlugin({
+      "attr-nameless.ts": `
+declare function defineComponent<P>(tag: string, factory: any): any
+/**
+ * @attribute - dangling description without a name
+ */
+export default defineComponent<{}>('attr-nameless', () => [])
+`,
+    });
+    expect(getDeclaration(manifest).attributes ?? []).toHaveLength(0);
+  });
+
+  test("merges with an expose()-derived attribute of the same name", () => {
+    const manifest = runPluginWithTypeChecker({
+      "attr-merge.ts": `
+import { asInteger } from '@zeix/le-truc'
+declare function defineComponent<P extends object>(tag: string, factory: any): any
+
+export type MergeProps = { count: number }
+
+/**
+ * @attribute {string} [count=0] - Starting count.
+ */
+export default defineComponent<MergeProps>('attr-merge', ({ expose }: any) => {
+  expose({ count: asInteger() })
+  return []
+})
+`,
+    });
+    const decl = getDeclaration(manifest);
+    expect(decl.attributes).toHaveLength(1);
+    // fieldName and Props-derived type win; JSDoc fills description/default.
+    expect(decl.attributes[0]).toMatchObject({
+      name: "count",
+      fieldName: "count",
+      type: { text: "number" },
+      default: "0",
+      description: "Starting count.",
+    });
   });
 });
 
@@ -489,8 +614,8 @@ customElements.define('stub-el', StubEl)
     // Find the declaration produced by the default analyzer (not our plugin's
     // synthesised one — stub-el has no defineComponent call).
     const stubDecl = manifest.modules
-      .flatMap((m: any) => m.declarations ?? [])
-      .find((d: any) => d.name === "StubEl");
+      .flatMap((m: Module) => m.declarations ?? [])
+      .find((d: Declaration): d is ClassDeclaration => d.kind === "class" && d.name === "StubEl");
     expect(stubDecl?.superclass).toMatchObject({
       name: "HTMLElement",
       package: "global:",

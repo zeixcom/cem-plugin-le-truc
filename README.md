@@ -50,7 +50,7 @@ This generates `custom-elements.json` from your Le Truc components.
 | `name` | PascalCase from `tagName` (`basic-counter` → `BasicCounter`) |
 | `description` | JSDoc above the `export default defineComponent(…)` |
 | `members` | Properties of the `Props` type argument via TypeScript type checker |
-| `attributes` | Properties in `expose({})` whose initializer is an `as*` call from `@zeix/le-truc` (imported by name or relative path) |
+| `attributes` | Properties in `expose({})` whose initializer is an `as*` call from `@zeix/le-truc` (imported by name or relative path), plus `@attribute`/`@attr` JSDoc tags |
 | `slots`, `events`, `cssParts`, `cssProperties` | `@slot`, `@fires`, `@csspart`, `@cssprop` JSDoc tags |
 | `demos` | `@demo {url} description` JSDoc tags |
 
@@ -94,6 +94,19 @@ The `description` is free-form JSDoc, but a few conventions improve the manifest
 - **Mention keyboard interaction.** If the component handles keyboard events (Enter, Space, Arrow keys, focus management), document it.
 
 These are recommendations, not requirements — a clear one-liner is better than keyword-stuffed prose.
+
+### `@attribute` annotations (connect-time attributes)
+
+Attributes that a component reads once via `host.getAttribute()` at connect time — server-side configuration of stable client-side behavior — never appear in `expose({})`, so they cannot be detected statically. Declare them with `@attribute` (alias `@attr`), the same tag names the stock analyzer supports for class-based components:
+
+```typescript
+/**
+ * A resizable split view.
+ * @attribute {'horizontal'|'vertical'} [orientation=horizontal] - Layout direction. Read once at connect time.
+ */
+```
+
+Syntax: `@attribute {type} name - description`, all parts except the name optional; `[name=default]` declares a default value. The emitted entry has **no `fieldName`** — the CEM schema's way of saying the attribute is not backed by a property. If the name collides with an `expose()`-derived attribute, the entries merge: the `Props` type remains the source of truth for `type` and `fieldName`, while the JSDoc tag contributes `description` and `default`.
 
 ### `@demo` annotations
 
