@@ -554,6 +554,115 @@ export default defineComponent<{ data: string }>('custom-parser', ({ expose }: a
   });
 });
 
+// ─── Test 6b: Component extensions (le-truc >=2.3) ───────────────────────────
+// formAssociated()/formAssociatedCheckbox() install a native-parity host
+// contract (form, name, disabled, labels, validity, ...) on the prototype at
+// runtime — never visible as class members in the component's own source.
+// observedAttributes() re-syncs an already-exposed Parser-backed prop from
+// its attribute post-connect.
+
+describe("defineComponent extensions", () => {
+  test("formAssociated() adds host-contract members and attributes", () => {
+    const manifest = runPlugin({
+      "form-input.ts": `
+import { formAssociated } from '@zeix/le-truc'
+declare function defineComponent<P>(tag: string, factory: any, extensions?: any): any
+
+export default defineComponent<{ value: string }>('form-input', ({ expose }: any) => {
+  expose({ value: '' })
+  return []
+}, [formAssociated()])
+`,
+    });
+    const decl = getDeclaration(manifest);
+    const members = decl.members ?? [];
+    const attributes = decl.attributes ?? [];
+    for (const name of [
+      "form",
+      "name",
+      "disabled",
+      "labels",
+      "validity",
+      "validationMessage",
+      "willValidate",
+    ]) {
+      expect(members.some((m) => m.name === name)).toBe(true);
+    }
+    for (const name of ["checkValidity", "reportValidity", "setCustomValidity"]) {
+      expect(members.some((m) => m.name === name && m.kind === "method")).toBe(
+        true,
+      );
+    }
+    expect(attributes.some((a) => a.name === "name")).toBe(true);
+    expect(attributes.some((a) => a.name === "disabled")).toBe(true);
+  });
+
+  test("formAssociatedCheckbox() adds the same host-contract members", () => {
+    const manifest = runPlugin({
+      "form-checkbox.ts": `
+import { formAssociatedCheckbox } from '@zeix/le-truc'
+declare function defineComponent<P>(tag: string, factory: any, extensions?: any): any
+
+export default defineComponent<{ checked: boolean }>('form-checkbox', ({ expose }: any) => {
+  expose({ checked: false })
+  return []
+}, [formAssociatedCheckbox()])
+`,
+    });
+    const members = getDeclaration(manifest).members ?? [];
+    expect(members.some((m) => m.name === "form")).toBe(true);
+    expect(members.some((m) => m.name === "checkValidity")).toBe(true);
+  });
+
+  test("non-le-truc formAssociated() identifier is ignored", () => {
+    const manifest = runPlugin({
+      "custom-ext.ts": `
+declare function formAssociated(): any
+declare function defineComponent<P>(tag: string, factory: any, extensions?: any): any
+
+export default defineComponent<{ value: string }>('custom-ext', ({ expose }: any) => {
+  expose({ value: '' })
+  return []
+}, [formAssociated()])
+`,
+    });
+    const members = getDeclaration(manifest).members ?? [];
+    expect(members.some((m) => m.name === "form")).toBe(false);
+  });
+
+  test("observedAttributes() adds attributes not already exposed", () => {
+    const manifest = runPlugin({
+      "variant-el.ts": `
+import { observedAttributes } from '@zeix/le-truc'
+declare function defineComponent<P>(tag: string, factory: any, extensions?: any): any
+
+export default defineComponent<{ variant: string }>('variant-el', () => [], [observedAttributes(['variant'])])
+`,
+    });
+    const attributes = getDeclaration(manifest).attributes ?? [];
+    expect(attributes).toHaveLength(1);
+    expect(attributes[0]).toMatchObject({ name: "variant", fieldName: "variant" });
+  });
+
+  test("observedAttributes() fills fieldName on an existing expose()-derived attribute", () => {
+    const manifest = runPlugin({
+      "variant-el2.ts": `
+import { asString } from '@zeix/le-truc'
+import { observedAttributes } from '@zeix/le-truc'
+declare function defineComponent<P>(tag: string, factory: any, extensions?: any): any
+
+export default defineComponent<{ variant: string }>('variant-el2', ({ expose }: any) => {
+  expose({ variant: asString() })
+  return []
+}, [observedAttributes(['variant'])])
+`,
+    });
+    const attributes = getDeclaration(manifest).attributes ?? [];
+    expect(attributes).toHaveLength(1);
+    expect(attributes[0]).toMatchObject({ name: "variant", fieldName: "variant" });
+  });
+});
+
 // ─── Test 7: Relative imports resolving to @zeix/le-truc ─────────────────────
 // Covers the self-analysis gap (NOTES.md): le-truc's own examples import via
 // '../../..' rather than '@zeix/le-truc'. The plugin resolves the relative
