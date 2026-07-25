@@ -151,6 +151,97 @@ function parseAttributeTag(text: string): {
   return { name, type, description };
 }
 
+// Native-parity host members installed on the prototype by formAssociated()
+// and formAssociatedCheckbox() (@zeix/le-truc >=2.3, src/extensions/form.ts
+// HOST_CONTRACT_DESCRIPTORS). Neither extension appears in the component's
+// own source as a class member, so static analysis alone would never surface
+// them — the CEM manifest would omit `form`, `checkValidity()`, etc. entirely.
+const FORM_ASSOCIATED_MEMBERS: ReadonlyArray<Record<string, unknown>> = [
+  {
+    kind: "field",
+    name: "form",
+    type: { text: "HTMLFormElement | null" },
+    description: "The form this element is associated with, or null.",
+  },
+  {
+    kind: "field",
+    name: "name",
+    type: { text: "string" },
+    description: "The form control's name, reflects the name attribute.",
+  },
+  {
+    kind: "field",
+    name: "disabled",
+    type: { text: "boolean" },
+    description:
+      "Whether the form control is disabled, reflects the disabled attribute.",
+  },
+  {
+    kind: "field",
+    name: "labels",
+    type: { text: "NodeList" },
+    description: "The label elements associated with this form control.",
+  },
+  {
+    kind: "field",
+    name: "validity",
+    type: { text: "ValidityState" },
+    description: "The validity state of the form control.",
+  },
+  {
+    kind: "field",
+    name: "validationMessage",
+    type: { text: "string" },
+    description: "The validation message of the form control.",
+  },
+  {
+    kind: "field",
+    name: "willValidate",
+    type: { text: "boolean" },
+    description: "Whether the form control will be validated.",
+  },
+  {
+    kind: "method",
+    name: "checkValidity",
+    return: { type: { text: "boolean" } },
+    description: "Checks the validity of the form control.",
+  },
+  {
+    kind: "method",
+    name: "reportValidity",
+    return: { type: { text: "boolean" } },
+    description:
+      "Checks the validity of the form control and reports it to the user.",
+  },
+  {
+    kind: "method",
+    name: "setCustomValidity",
+    parameters: [{ name: "message", type: { text: "string" } }],
+    return: { type: { text: "void" } },
+    description: "Sets a custom validity message on the form control.",
+  },
+];
+
+// Attributes reflected by the same host contract: `name` and `disabled` are
+// plain get/set attribute reflections (see form.ts HOST_CONTRACT_DESCRIPTORS
+// and createManagedDisabledProperty); `value`/`checked` remain the author's
+// own responsibility via expose() and are already captured elsewhere.
+const FORM_ASSOCIATED_ATTRIBUTES: ReadonlyArray<Record<string, unknown>> = [
+  { name: "name", fieldName: "name", type: { text: "string" } },
+  { name: "disabled", fieldName: "disabled", type: { text: "boolean" } },
+];
+
+function addFormAssociatedMembers(declaration: Record<string, unknown>): void {
+  const members = declaration.members as Array<Record<string, unknown>>;
+  const attributes = declaration.attributes as Array<Record<string, unknown>>;
+  for (const member of FORM_ASSOCIATED_MEMBERS) {
+    if (!members.some((m) => m.name === member.name)) members.push(member);
+  }
+  for (const attr of FORM_ASSOCIATED_ATTRIBUTES) {
+    if (!attributes.some((a) => a.name === attr.name)) attributes.push(attr);
+  }
+}
+
 // biome-ignore lint/suspicious/noExplicitAny: avoid version-mismatch errors
 function findExposeCall(ts: any, node: any): any | undefined {
   // biome-ignore lint/suspicious/noExplicitAny: avoid version-mismatch errors
@@ -324,6 +415,57 @@ export function leTrucPlugin(getTypeChecker?: () => TypeChecker): Plugin {
             };
             if (matchingField?.type) attr.type = matchingField.type;
             (declaration.attributes as unknown[]).push(attr);
+          }
+        }
+      }
+
+      // Traverse the extensions array (defineComponent's 3rd argument) for
+      // formAssociated()/formAssociatedCheckbox()/observedAttributes() calls.
+      // These extensions add real, runtime-installed properties/methods/
+      // attributes that never appear as class members in the component's own
+      // source — the default analyzer has nothing to find them by.
+      const extensionsArg = node.arguments[2];
+      if (extensionsArg && ts.isArrayLiteralExpression(extensionsArg)) {
+        const filename: string = node.getSourceFile().fileName;
+        const importMap = getImportMap(context, filename);
+        for (const el of extensionsArg.elements) {
+          if (!ts.isCallExpression(el)) continue;
+          const callee = el.expression;
+          if (!ts.isIdentifier(callee)) continue;
+          const calleeName: string = callee.text;
+          if (importMap.get(calleeName) !== LE_TRUC_PACKAGE) continue;
+
+          if (
+            calleeName === "formAssociated" ||
+            calleeName === "formAssociatedCheckbox"
+          ) {
+            addFormAssociatedMembers(declaration);
+          } else if (calleeName === "observedAttributes") {
+            const namesArg = el.arguments[0];
+            if (!namesArg || !ts.isArrayLiteralExpression(namesArg)) continue;
+            const attributes = declaration.attributes as Array<
+              Record<string, unknown>
+            >;
+            const members = declaration.members as Array<
+              Record<string, unknown>
+            >;
+            for (const nameEl of namesArg.elements) {
+              if (!ts.isStringLiteral(nameEl)) continue;
+              const attrName: string = nameEl.text;
+              const existing = attributes.find((a) => a.name === attrName);
+              const matchingField = members.find((m) => m.name === attrName);
+              if (existing) {
+                if (!existing.fieldName) existing.fieldName = attrName;
+                if (!existing.type && matchingField?.type)
+                  existing.type = matchingField.type;
+              } else {
+                attributes.push({
+                  name: attrName,
+                  fieldName: attrName,
+                  ...(matchingField?.type ? { type: matchingField.type } : {}),
+                });
+              }
+            }
           }
         }
       }

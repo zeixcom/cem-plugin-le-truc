@@ -53,6 +53,7 @@ This generates `custom-elements.json` from your Le Truc components.
 | `attributes` | Properties in `expose({})` whose initializer is an `as*` call from `@zeix/le-truc` (imported by name or relative path), plus `@attribute`/`@attr` JSDoc tags |
 | `slots`, `events`, `cssParts`, `cssProperties` | `@slot`, `@fires`, `@csspart`, `@cssprop` JSDoc tags |
 | `demos` | `@demo {url} description` JSDoc tags |
+| `members`, `attributes` (extension-derived) | `formAssociated()`, `formAssociatedCheckbox()`, `observedAttributes([…])` in `defineComponent`'s third argument (`@zeix/le-truc` >=2.3) |
 
 The plugin also fixes up three schema-compliance gaps in the default analyzer's output: it links the default `export` to the synthesised declaration `name` (required by `Reference.name`), adds `package: "global:"` to built-in `superclass` references (e.g. `HTMLElement` stubs), and relativizes module paths against the working directory — the `overrideModuleCreation` boilerplate feeds `ts.createProgram` source files whose names are absolute, which would otherwise leak local (or CI-runner) paths into the published manifest.
 
@@ -107,6 +108,15 @@ Attributes that a component reads once via `host.getAttribute()` at connect time
 ```
 
 Syntax: `@attribute {type} name - description`, all parts except the name optional; `[name=default]` declares a default value. The emitted entry has **no `fieldName`** — the CEM schema's way of saying the attribute is not backed by a property. If the name collides with an `expose()`-derived attribute, the entries merge: the `Props` type remains the source of truth for `type` and `fieldName`, while the JSDoc tag contributes `description` and `default`.
+
+### Component extensions (`@zeix/le-truc` >=2.3)
+
+`defineComponent`'s optional third argument, an array of extensions, can add properties, methods, and attributes that never appear in the component's own source — they're installed on the prototype (or synced from an attribute) at runtime by the extension itself, so static analysis has nothing to find them by without special-casing each extension:
+
+- **`formAssociated()`** / **`formAssociatedCheckbox()`** — both install the same native-parity host contract: `members` gain `form`, `name`, `disabled`, `labels`, `validity`, `validationMessage`, `willValidate` (fields) and `checkValidity()`, `reportValidity()`, `setCustomValidity(message)` (methods); `attributes` gain `name` and `disabled` (both attribute-reflected). Detected only when imported from `@zeix/le-truc` (by name or relative path, same resolution as `as*` parsers).
+- **`observedAttributes([...names])`** — re-syncs an already-`expose()`d, Parser-backed property from its attribute after connect (attributes are otherwise connect-time-only, see le-truc ADR 0003). Each name is ensured to have an `attributes` entry with `fieldName` set to the same name; if the property was already detected via `expose()`, only the missing `fieldName`/`type` are filled in.
+
+These are additive: they merge with whatever `expose()` and JSDoc tags already produced, keyed by name, without overwriting existing `type`/`fieldName`/`description`.
 
 ### `@demo` annotations
 
