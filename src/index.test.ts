@@ -605,6 +605,145 @@ export default defineComponent<{ x: number }>('custom-el', ({ expose }: any) => 
   });
 });
 
+describe("expose() with as* parsers: default extraction", () => {
+  test("asBoolean() with no args defaults to false", () => {
+    const manifest = runPlugin({
+      "el.ts": `
+import { asBoolean } from '@zeix/le-truc'
+declare function defineComponent<P>(tag: string, factory: any): any
+export default defineComponent<{ active: boolean }>('bool-el', ({ expose }: any) => {
+  expose({ active: asBoolean() })
+  return []
+})
+`,
+    });
+    const attributes = getDeclaration(manifest).attributes ?? [];
+    expect(attributes[0]?.default).toBe("false");
+  });
+
+  test("asBoolean(true) captures explicit literal default", () => {
+    const manifest = runPlugin({
+      "el.ts": `
+import { asBoolean } from '@zeix/le-truc'
+declare function defineComponent<P>(tag: string, factory: any): any
+export default defineComponent<{ active: boolean }>('bool-el', ({ expose }: any) => {
+  expose({ active: asBoolean(true) })
+  return []
+})
+`,
+    });
+    const attributes = getDeclaration(manifest).attributes ?? [];
+    expect(attributes[0]?.default).toBe("true");
+  });
+
+  test("asString() with no args defaults to empty string", () => {
+    const manifest = runPlugin({
+      "el.ts": `
+import { asString } from '@zeix/le-truc'
+declare function defineComponent<P>(tag: string, factory: any): any
+export default defineComponent<{ label: string }>('str-el', ({ expose }: any) => {
+  expose({ label: asString() })
+  return []
+})
+`,
+    });
+    const attributes = getDeclaration(manifest).attributes ?? [];
+    expect(attributes[0]?.default).toBe('""');
+  });
+
+  test("asString('foo') captures explicit literal default", () => {
+    const manifest = runPlugin({
+      "el.ts": `
+import { asString } from '@zeix/le-truc'
+declare function defineComponent<P>(tag: string, factory: any): any
+export default defineComponent<{ label: string }>('str-el', ({ expose }: any) => {
+  expose({ label: asString('foo') })
+  return []
+})
+`,
+    });
+    const attributes = getDeclaration(manifest).attributes ?? [];
+    expect(attributes[0]?.default).toBe('"foo"');
+  });
+
+  test("asNumber()/asInteger() with no args default to 0", () => {
+    const manifest = runPlugin({
+      "el.ts": `
+import { asNumber, asInteger } from '@zeix/le-truc'
+declare function defineComponent<P>(tag: string, factory: any): any
+export default defineComponent<{ count: number; total: number }>('num-el', ({ expose }: any) => {
+  expose({ count: asNumber(), total: asInteger() })
+  return []
+})
+`,
+    });
+    const attributes = getDeclaration(manifest).attributes ?? [];
+    expect(attributes[0]?.default).toBe("0");
+    expect(attributes[1]?.default).toBe("0");
+  });
+
+  test("asNumber(-5) captures negative literal default", () => {
+    const manifest = runPlugin({
+      "el.ts": `
+import { asNumber } from '@zeix/le-truc'
+declare function defineComponent<P>(tag: string, factory: any): any
+export default defineComponent<{ offset: number }>('num-el', ({ expose }: any) => {
+  expose({ offset: asNumber(-5) })
+  return []
+})
+`,
+    });
+    const attributes = getDeclaration(manifest).attributes ?? [];
+    expect(attributes[0]?.default).toBe("-5");
+  });
+
+  test("asClampedInteger(min, max) defaults to min", () => {
+    const manifest = runPlugin({
+      "el.ts": `
+import { asClampedInteger } from '@zeix/le-truc'
+declare function defineComponent<P>(tag: string, factory: any): any
+export default defineComponent<{ steps: number }>('clamp-el', ({ expose }: any) => {
+  expose({ steps: asClampedInteger(1, 10) })
+  return []
+})
+`,
+    });
+    const attributes = getDeclaration(manifest).attributes ?? [];
+    expect(attributes[0]?.default).toBe("1");
+  });
+
+  test("asEnum([...]) defaults to first array entry", () => {
+    const manifest = runPlugin({
+      "el.ts": `
+import { asEnum } from '@zeix/le-truc'
+declare function defineComponent<P>(tag: string, factory: any): any
+export default defineComponent<{ size: string }>('enum-el', ({ expose }: any) => {
+  expose({ size: asEnum(['md', 'sm', 'lg']) })
+  return []
+})
+`,
+    });
+    const attributes = getDeclaration(manifest).attributes ?? [];
+    expect(attributes[0]?.default).toBe('"md"');
+  });
+
+  test("non-literal argument falls back to the parser's assumed default", () => {
+    const manifest = runPlugin({
+      "el.ts": `
+import { asBoolean } from '@zeix/le-truc'
+declare function defineComponent<P>(tag: string, factory: any): any
+const FALLBACK = true
+export default defineComponent<{ active: boolean }>('bool-el', ({ expose }: any) => {
+  expose({ active: asBoolean(FALLBACK) })
+  return []
+})
+`,
+    });
+    const attributes = getDeclaration(manifest).attributes ?? [];
+    expect(attributes[0]?.default).toBe("false");
+  });
+});
+
 describe("expose() with asParser()", () => {
   test("detects asParser() call as attribute-backed", () => {
     const manifest = runPlugin({
