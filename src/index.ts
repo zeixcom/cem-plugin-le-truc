@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { Plugin } from "@custom-elements-manifest/analyzer";
-import type { TypeChecker } from "typescript";
+import type TS from "typescript";
+import type { Expression, TypeChecker } from "typescript";
 
 // `ts` and `node` in CEM plugin hooks come from CEM's bundled TypeScript (~5.4),
 // which has different SyntaxKind enum values than this package's peer TypeScript (^5.0).
@@ -100,6 +101,56 @@ function parseNameDesc(text: string): { name: string; description: string } {
       description: trimmed.slice(idx + 3).trim(),
     };
   return { name: trimmed, description: "" };
+}
+
+// Extract the runtime default value a le-truc built-in parser falls back to
+// when the attribute is absent, from the literal arguments of its call
+// expression (e.g. `asBoolean()` -> false, `asNumber(5)` -> 5). Static
+// analysis only — non-literal arguments (variables, expressions) are not
+// resolved and yield no default. Returns a JSON-literal string suitable for
+// display (e.g. "false", "0", '"md"'), or undefined if unknown.
+function extractParserDefault(
+  ts: typeof TS,
+  calleeName: string,
+  args: readonly Expression[],
+): string | undefined {
+  const literal = (
+    node: Expression | undefined,
+  ): string | number | boolean | undefined => {
+    if (!node) return undefined;
+    if (ts.isStringLiteral(node)) return node.text;
+    if (ts.isNumericLiteral(node)) return Number(node.text);
+    if (
+      ts.isPrefixUnaryExpression(node) &&
+      node.operator === ts.SyntaxKind.MinusToken &&
+      ts.isNumericLiteral(node.operand)
+    )
+      return -Number(node.operand.text);
+    if (node.kind === ts.SyntaxKind.TrueKeyword) return true;
+    if (node.kind === ts.SyntaxKind.FalseKeyword) return false;
+    return undefined;
+  };
+
+  switch (calleeName) {
+    case "asBoolean":
+      return JSON.stringify(literal(args[0]) ?? false);
+    case "asString":
+      return JSON.stringify(literal(args[0]) ?? "");
+    case "asNumber":
+    case "asInteger":
+    case "asClampedInteger":
+      return JSON.stringify(literal(args[0]) ?? 0);
+    case "asEnum": {
+      const arr = args[0];
+      if (arr && ts.isArrayLiteralExpression(arr) && arr.elements.length) {
+        const first = literal(arr.elements[0]);
+        if (first !== undefined) return JSON.stringify(first);
+      }
+      return undefined;
+    }
+    default:
+      return undefined;
+  }
 }
 
 // Parse an @attribute / @attr tag comment:
@@ -463,6 +514,10 @@ export function leTrucPlugin(getTypeChecker?: () => TypeChecker): Plugin {
               fieldName: propName,
             };
             if (matchingField?.type) attr.type = matchingField.type;
+            if (isLeTrucParser) {
+              const def = extractParserDefault(ts, calleeName, init.arguments);
+              if (def !== undefined) attr.default = def;
+            }
             (declaration.attributes as unknown[]).push(attr);
           }
         }
