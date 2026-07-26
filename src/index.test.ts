@@ -6,6 +6,7 @@ import { create, ts } from "@custom-elements-manifest/analyzer";
 import type {
   ClassDeclaration,
   ClassField,
+  ClassMethod,
   CustomElement,
   Declaration,
   Package,
@@ -176,6 +177,78 @@ export default defineComponent<TypedProps>('typed-el', () => [])
   test("members are absent (not populated) without type checker", () => {
     const manifest = runPlugin(src);
     expect(getDeclaration(manifest).members ?? []).toHaveLength(0);
+  });
+});
+
+describe("Props member resolution: function-typed props are methods", () => {
+  const findMethod = (decl: PluginDeclaration, name: string) =>
+    (decl.members ?? []).find(
+      (m): m is ClassMethod => m.kind === "method" && m.name === name,
+    );
+
+  test("a `() => void` prop is a method, not a field with a function type", () => {
+    const manifest = runPluginWithTypeChecker({
+      "form-textbox.ts": `
+declare function defineComponent<P extends object>(tag: string, factory: any): any
+
+export type FormTextboxProps = {
+  value: string
+  /** Clears the input value. */
+  clear: () => void
+}
+
+export default defineComponent<FormTextboxProps>('form-textbox', () => [])
+`,
+    });
+    const decl = getDeclaration(manifest);
+    const clearMethod = findMethod(decl, "clear");
+    expect(clearMethod).toBeDefined();
+    expect(clearMethod?.kind).toBe("method");
+    expect(clearMethod?.return?.type?.text).toBe("void");
+    expect(clearMethod?.description).toBe("Clears the input value.");
+    // Not also emitted as a field
+    expect(
+      (decl.members ?? []).filter((m) => m.name === "clear"),
+    ).toHaveLength(1);
+  });
+
+  test("parameters and non-void return type are captured", () => {
+    const manifest = runPluginWithTypeChecker({
+      "form-spinbutton.ts": `
+declare function defineComponent<P extends object>(tag: string, factory: any): any
+
+export type FormSpinbuttonProps = {
+  value: number
+  stepUp: (steps?: number) => boolean
+}
+
+export default defineComponent<FormSpinbuttonProps>('form-spinbutton', () => [])
+`,
+    });
+    const decl = getDeclaration(manifest);
+    const stepUp = findMethod(decl, "stepUp");
+    expect(stepUp?.return?.type?.text).toBe("boolean");
+    expect(stepUp?.parameters).toHaveLength(1);
+    expect(stepUp?.parameters?.[0]).toMatchObject({
+      name: "steps",
+      optional: true,
+    });
+  });
+
+  test("a plain data field is still a field", () => {
+    const manifest = runPluginWithTypeChecker({
+      "typed.ts": `
+declare function defineComponent<P extends object>(tag: string, factory: any): any
+
+export type TypedProps = {
+  count: number
+}
+
+export default defineComponent<TypedProps>('typed-el', () => [])
+`,
+    });
+    const decl = getDeclaration(manifest);
+    expect(decl.members?.find((m) => m.name === "count")?.kind).toBe("field");
   });
 });
 

@@ -360,17 +360,66 @@ export function leTrucPlugin(getTypeChecker?: () => TypeChecker): Plugin {
           // biome-ignore lint/suspicious/noExplicitAny: avoid version-mismatch errors
           const propsType = checker.getTypeFromTypeNode(typeArgNode as any);
           for (const sym of checker.getPropertiesOfType(propsType)) {
-            const field: Record<string, unknown> = {
-              kind: "field",
-              name: sym.getName(),
-              type: {
-                text: checker.typeToString(checker.getTypeOfSymbol(sym)),
-              },
-            };
+            const symType = checker.getTypeOfSymbol(sym);
             const docText = sym
               .getDocumentationComment(checker)
               .map((c) => c.text)
               .join("");
+
+            // Properties typed as a plain function (e.g. `clear: () => void`,
+            // branded at runtime with `defineMethod()`) are methods, not
+            // fields. The brand lives on the runtime value returned by
+            // `defineMethod()`, not on the Props type itself — the Props
+            // type just declares a function type — so call-signature
+            // presence is what actually distinguishes a method from a field
+            // here.
+            const callSignatures = checker.getSignaturesOfType(
+              symType,
+              // biome-ignore lint/suspicious/noExplicitAny: avoid version-mismatch errors
+              (ts as any).SignatureKind.Call,
+            );
+            if (callSignatures.length > 0) {
+              // biome-ignore lint/style/noNonNullAssertion: known to be non-null here
+              const signature = callSignatures[0]!;
+              const parameters = signature
+                .getParameters()
+                // biome-ignore lint/suspicious/noExplicitAny: avoid version-mismatch errors
+                .map((param: any) => {
+                  const paramDecl = param.valueDeclaration;
+                  const optional =
+                    !!paramDecl &&
+                    ts.isParameter(paramDecl) &&
+                    (!!paramDecl.questionToken || !!paramDecl.initializer);
+                  return {
+                    name: param.getName(),
+                    type: {
+                      text: checker.typeToString(
+                        checker.getTypeOfSymbol(param),
+                      ),
+                    },
+                    ...(optional ? { optional: true } : {}),
+                  };
+                });
+              const method: Record<string, unknown> = {
+                kind: "method",
+                name: sym.getName(),
+                ...(parameters.length ? { parameters } : {}),
+                return: {
+                  type: {
+                    text: checker.typeToString(signature.getReturnType()),
+                  },
+                },
+              };
+              if (docText) method.description = docText;
+              (declaration.members as unknown[]).push(method);
+              continue;
+            }
+
+            const field: Record<string, unknown> = {
+              kind: "field",
+              name: sym.getName(),
+              type: { text: checker.typeToString(symType) },
+            };
             if (docText) field.description = docText;
             (declaration.members as unknown[]).push(field);
           }
